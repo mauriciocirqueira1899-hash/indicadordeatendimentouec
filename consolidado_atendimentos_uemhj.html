@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Consolidado de Atendimentos – UEMHJ</title>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+
+<style>
+  :root {
+    --bg:        #F0F4F8;
+    --surface:   #FFFFFF;
+    --border:    #D0DAE4;
+    --text:      #1A2533;
+    --muted:     #5A6B7D;
+    --accent:    #0F6B72;
+    --accent2:   #1E9BA5;
+    --male:      #2563EB;
+    --female:    #DB2777;
+    --ped:       #7C3AED;
+    --clinic:    #0F6B72;
+    --warn:      #D97706;
+    --radius:    8px;
+    --mono:      'Courier New', monospace;
+    --sans:      system-ui, -apple-system, sans-serif;
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: var(--sans); background: var(--bg); color: var(--text); min-height: 100vh; padding: 24px 16px 48px; }
+
+  header { display: flex; align-items: center; gap: 14px; margin-bottom: 28px; }
+  .logo-box { width: 48px; height: 48px; background: var(--accent); border-radius: var(--radius); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+  header h1 { font-size: 1.25rem; font-weight: 700; letter-spacing: -0.3px; line-height: 1.2; color: var(--accent); }
+  header p { font-size: .8rem; color: var(--muted); margin-top: 2px; }
+
+  #dropzone { border: 2px dashed var(--accent2); border-radius: var(--radius); background: var(--surface); padding: 40px 24px; text-align: center; cursor: pointer; transition: background .15s, border-color .15s; margin-bottom: 24px; }
+  #dropzone.drag-over { background: #E0F4F6; border-color: var(--accent); }
+  #dropzone svg { width: 40px; height: 40px; stroke: var(--accent2); margin-bottom: 12px; fill: none; }
+  #dropzone p { color: var(--muted); font-size: .9rem; }
+  #dropzone strong { color: var(--text); font-size: 1rem; display: block; margin-bottom: 6px; }
+  #file-input { display: none; }
+  .btn-upload { display: inline-block; margin-top: 14px; padding: 9px 22px; background: var(--accent); color: #fff; border: none; border-radius: var(--radius); font-size: .9rem; font-weight: 600; cursor: pointer; transition: background .15s; }
+  .btn-upload:hover { background: var(--accent2); }
+
+  #status { padding: 10px 16px; border-radius: var(--radius); font-size: .85rem; margin-bottom: 20px; display: none; }
+  #status.info  { background: #E0F4F6; color: var(--accent); border: 1px solid var(--accent2); }
+  #status.error { background: #FEF2F2; color: #B91C1C; border: 1px solid #FCA5A5; }
+  #status.ok    { background: #F0FDF4; color: #166534; border: 1px solid #86EFAC; }
+
+  #results { display: none; }
+  .file-label { font-size: .78rem; color: var(--muted); margin-bottom: 16px; border-left: 3px solid var(--accent2); padding-left: 10px; }
+
+  .grid-top { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; margin-bottom: 20px; }
+  .kpi { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 20px; position: relative; overflow: hidden; }
+  .kpi::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px; background: var(--kpi-color, var(--accent)); }
+  .kpi .num { font-size: 2.2rem; font-weight: 800; font-family: var(--mono); color: var(--kpi-color, var(--accent)); line-height: 1; }
+  .kpi .label { font-size: .75rem; color: var(--muted); margin-top: 6px; text-transform: uppercase; letter-spacing: .5px; }
+  .kpi .sub { font-size: .78rem; color: var(--muted); margin-top: 4px; }
+
+  .section { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 20px; overflow: hidden; }
+  .section-header { padding: 14px 18px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 10px; }
+  .section-header h2 { font-size: .9rem; font-weight: 700; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+
+  .bar-row { display: grid; grid-template-columns: 140px 1fr 52px; align-items: center; gap: 10px; padding: 8px 18px; border-bottom: 1px solid #F0F4F8; font-size: .85rem; }
+  .bar-row:last-child { border-bottom: none; }
+  .bar-track { height: 8px; background: #F0F4F8; border-radius: 4px; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 4px; }
+  .bar-val { font-family: var(--mono); font-size: .82rem; color: var(--muted); text-align: right; }
+
+  .tbl-wrap { overflow-x: auto; max-height: 520px; overflow-y: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: .82rem; }
+  thead th { position: sticky; top: 0; z-index: 1; background: var(--bg); padding: 8px 14px; text-align: left; font-size: .73rem; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; white-space: nowrap; }
+  td { padding: 7px 14px; border-bottom: 1px solid var(--border); font-family: var(--mono); white-space: nowrap; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: #F7FAFC; }
+  .age-group { font-family: var(--sans); color: var(--muted); font-size: .82rem; }
+  .n-zero td { color: #CBD5E0; }
+
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 20px; }
+  @media (max-width: 600px) { .grid-2 { grid-template-columns: 1fr; } }
+
+  footer { text-align: center; font-size: .72rem; color: var(--muted); margin-top: 32px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo-box">
+    <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width: 28px; height: 28px;">
+      <path d="M12 2L2 7l10 5 10-5-10-5M2 17l10 5 10-5M2 12l10 5 10-5"/>
+    </svg>
+  </div>
+  <div>
+    <h1>Consolidado de Atendimentos</h1>
+    <p>Unidade de Emergência Mãe Hilda de Jitolu — UEMHJ</p>
+  </div>
+</header>
+
+<div id="dropzone">
+  <svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1M12 12V3M8 7l4-4 4 4"/>
+  </svg>
+  <strong>Arraste o arquivo aqui</strong>
+  <p>Suporta PDF (texto nativo) e Excel / CSV — padrão de colunas UEMHJ</p>
+  <button class="btn-upload" onclick="document.getElementById('file-input').click()">Ou clique para escolher</button>
+  <input type="file" id="file-input" accept=".pdf,.xlsx,.xls,.csv">
+</div>
+
+<div id="status"></div>
+<div id="results"></div>
+
+<footer>Processamento 100% local — nenhum dado é enviado a servidores externos.</footer>
+
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+const dz = document.getElementById('dropzone');
+const fi = document.getElementById('file-input');
+
+dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag-over'); });
+dz.addEventListener('dragleave', () => dz.classList.remove('drag-over'));
+dz.addEventListener('drop', e => { e.preventDefault(); dz.classList.remove('drag-over'); handleFile(e.dataTransfer.files[0]); });
+fi.addEventListener('change', () => { if (fi.files[0]) handleFile(fi.files[0]); });
+
+async function handleFile(file) {
+  setStatus('info', `Lendo "${file.name}"…`);
+  showResults(null);
+  try {
+    const ext = file.name.split('.').pop().toLowerCase();
+    let rows;
+    if (ext === 'pdf') {
+      rows = await readPdfWithPdfJs(file);
+    } else {
+      rows = await parseExcel(file);
+    }
+    
+    if (!rows || rows.length === 0) throw new Error('Não foi possível extrair linhas de dados deste arquivo. Verifique se há registros com diagnóstico preenchido.');
+    
+    const data = consolidate(rows);
+    setStatus('ok', `✓ ${data.total} atendimentos consolidados de "${file.name}" — cabeçalho, imagem, linhas sem diagnóstico e totalizador removidos automaticamente.`);
+    showResults(data, file.name);
+  } catch (err) {
+    setStatus('error', `Erro ao processar: ${err.message}`);
+    console.error(err);
+  }
+}
+
+async function readPdfWithPdfJs(file) {
+  const buf = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+  let lines = [];
+
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    const items = content.items.map(it => ({
+      text: it.str.trim(),
+      x: Math.round(it.transform[4]),
+      y: Math.round(it.transform[5])
+    })).filter(it => it.text.length > 0);
+
+    const groupLines = [];
+    for (const item of items) {
+      const existing = groupLines.find(l => Math.abs(l.y - item.y) <= 5);
+      if (existing) existing.parts.push(item);
+      else groupLines.push({ y: item.y, parts: [item] });
+    }
+    groupLines.sort((a, b) => b.y - a.y);
+    for (const line of groupLines) {
+      line.parts.sort((a, b) => a.x - b.x);
+      lines.push(...line.parts.map(p => p.text));
+    }
+  }
+  return parsePdfText(lines);
+}
+
+function parsePdfText(lines) {
+  const rows = [];
+  const PRONTUARIO = /^\d{5,8}$/;
+  const SEXO_RE    = /^(Masculino|Feminino|M|F)$/i;
+  const IDADE_TOK  = /\d+\s*(anos?|m[eê]s(?:es)?|dias?)/i;
+  const ESP_RE     = /(PEDIATRIA|CLINICA|MEDICA|GERAL)/i;
+  const DATE_RE    = /\d{2}\/\d{2}\/\d{4}/;
+
+  let i = 0;
+  while (i < lines.length) {
+    let line = lines[i];
+    if (!/^\d+$/.test(line) && !line.toLowerCase().includes('prontu')) { i++; continue; }
+
+    const rec = { prontuario: line, nome: '', sexo: '', idadeAnos: null, especialidade: '', diagnostico: '' };
+    i++;
+
+    if (i < lines.length && !SEXO_RE.test(lines[i]) && !DATE_RE.test(lines[i])) {
+      rec.nome = lines[i];
+      i++;
+    }
+
+    let lookAhead = 0;
+    while (lookAhead < 5 && (i + lookAhead) < lines.length) {
+      let curr = lines[i + lookAhead];
+      if (SEXO_RE.test(curr)) rec.sexo = curr;
+      if (IDADE_TOK.test(curr)) rec.idadeAnos = extrairIdadeFormatoComplexo(curr);
+      if (ESP_RE.test(curr)) rec.especialidade = curr;
+      lookAhead++;
+    }
+    i += 2;
+
+    const diagParts = [];
+    while (i < lines.length) {
+      let l = lines[i];
+      if (/^\d{5,8}$/.test(l) || l.toLowerCase().includes('prontuário')) break;
+      if (l.length > 2 && !DATE_RE.test(l)) diagParts.push(l);
+      i++;
+    }
+    rec.diagnostico = diagParts.join(' ').trim();
+    rows.push(rec);
+  }
+  return rows;
+}
+
+async function parseExcel(file) {
+  const buf = await file.arrayBuffer();
+  const wb  = XLSX.read(buf, { type: 'array' });
+  const ws  = wb.Sheets[wb.SheetNames[0]];
+
+  // Lê como array de arrays (sem interpretar cabeçalho) para ter controle total
+  const rawRows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+
+  // ── LIMPEZA 1: remove linhas 1 e 2 ──────────────────────────────────────
+  // Linha 1: cabeçalho do relatório (data, nome da unidade, possível imagem)
+  // Linha 2: "Relatório Emergência: ..."
+  const semCabecalho = rawRows.slice(2);
+
+  // ── LIMPEZA 2: encontra a linha de cabeçalho real (Prontuario | Nome ...) ─
+  let headerIdx = semCabecalho.findIndex(row =>
+    row.some(cell => String(cell).trim().toLowerCase() === 'prontuario')
+  );
+  if (headerIdx === -1) headerIdx = 0;
+
+  const headers = semCabecalho[headerIdx].map(h => String(h).trim().toUpperCase());
+  const dataRows = semCabecalho.slice(headerIdx + 1);
+
+  // Índices das colunas relevantes (busca flexível)
+  const colIdx = (names) => headers.findIndex(h => names.some(n => h.includes(n)));
+  const iPront  = colIdx(['PRONTUARIO', 'CD_PRONT']);
+  const iNome   = colIdx(['NOME', 'PACIENTE', 'NM_PACIENTE']);
+  const iSexo   = colIdx(['SEXO', 'GENERO', 'TP_SEXO']);
+  const iIdade  = colIdx(['IDADE', 'NR_IDADE']);
+  const iEsp    = colIdx(['ESPECIALIDADE', 'CLINICA', 'DS_LEITO']);
+  const iDiag   = colIdx(['DIAGNOSTICO', 'CID', 'DS_CID', 'DS_PRODUTO']);
+
+  const resultado = [];
+
+  for (const row of dataRows) {
+    // ── LIMPEZA 3: descarta linha "Total de Registros" ──────────────────────
+    const rowText = row.map(c => String(c)).join(' ').toLowerCase();
+    if (rowText.includes('total de registro')) continue;
+
+    // ── LIMPEZA 4: descarta linhas completamente vazias ─────────────────────
+    if (row.every(cell => String(cell).trim() === '')) continue;
+
+    // ── LIMPEZA 5: descarta linhas de continuação de nome (sem prontuário) ──
+    // O Excel do AGHUse às vezes quebra o nome do paciente em 2 linhas;
+    // a linha de continuação não tem prontuário nem diagnóstico
+    const pronVal = iPront >= 0 ? String(row[iPront] ?? '').trim() : '';
+    if (!pronVal) continue;
+
+    // ── LIMPEZA 6: descarta registros sem diagnóstico preenchido ─────────────
+    const diagVal = iDiag >= 0 ? String(row[iDiag] ?? '').trim() : '';
+    if (!diagVal || diagVal === '0') continue;
+
+    resultado.push({
+      prontuario:    pronVal,
+      nome:          iNome  >= 0 ? String(row[iNome]  ?? '').trim() : '',
+      sexo:          iSexo  >= 0 ? String(row[iSexo]  ?? '').trim() : '',
+      idadeAnos:     iIdade >= 0 ? extrairIdadeFormatoComplexo(String(row[iIdade] ?? '')) : null,
+      especialidade: iEsp   >= 0 ? String(row[iEsp]   ?? '').trim() : '',
+      diagnostico:   diagVal
+    });
+  }
+
+  return resultado;
+}
+
+function extrairIdadeFormatoComplexo(str) {
+  if (!str || str.trim() === '') return null;
+
+  let anos = 0, meses = 0, dias = 0;
+  let detectado = false;
+
+  const regexAnos = /(\d+)\s*ano/i;
+  const regexMeses = /(\d+)\s*m[eê]s/i;
+  const regexDias = /(\d+)\s*dia/i;
+
+  const matchAnos = str.match(regexAnos);
+  const matchMeses = str.match(regexMeses);
+  const matchDias = str.match(regexDias);
+
+  if (matchAnos) { anos = parseInt(matchAnos[1], 10); detectado = true; }
+  if (matchMeses) { meses = parseInt(matchMeses[1], 10); detectado = true; }
+  if (matchDias) { dias = parseInt(matchDias[1], 10); detectado = true; }
+
+  if (!detectado) {
+    const apenasNum = parseInt(str.replace(/\D/g, ''), 10);
+    return !isNaN(apenasNum) ? apenasNum : null;
+  }
+
+  return anos + (meses / 12) + (dias / 365);
+}
+
+function consolidate(rows) {
+  let masc = 0, fem = 0, ped = 0, clinica = 0;
+  const ageBuckets = {};
+
+  for (const r of rows) {
+    // 1) Processamento preciso do Sexo (Evitando falhas de espaços nulos)
+    const sx = r.sexo.toUpperCase().trim();
+    if (sx === 'M' || sx.startsWith('MASC')) {
+      masc++;
+    } else if (sx === 'F' || sx.startsWith('FEM')) {
+      fem++;
+    }
+
+    // 2) Armazenamento da Faixa Etária
+    const idade = r.idadeAnos;
+    if (idade !== null) {
+      const bucket = idade < 1 ? '0-1' : String(Math.floor(idade));
+      ageBuckets[bucket] = (ageBuckets[bucket] || 0) + 1;
+    }
+
+    // 3) Divisão das Especialidades
+    const esp = String(r.especialidade).toUpperCase();
+    if (esp.includes('PED') || (idade !== null && idade <= 12)) {
+      ped++;
+    } else {
+      clinica++;
+    }
+  }
+
+  return { total: rows.length, masc, fem, ped, clinica, ageBuckets };
+}
+
+function showResults(data, filename) {
+  const el = document.getElementById('results');
+  if (!data) { el.style.display = 'none'; el.innerHTML = ''; return; }
+  el.style.display = 'block';
+
+  const pct = (n, t) => t ? Math.round(n / t * 100) : 0;
+
+  const ageRows = [{ label: '0 a 1 ano', count: data.ageBuckets['0-1'] || 0 }];
+  for (let a = 2; a <= 120; a++) {
+    ageRows.push({ label: `${a} anos`, count: data.ageBuckets[String(a)] || 0 });
+  }
+  const maxN = Math.max(...ageRows.map(r => r.count), 1);
+
+  el.innerHTML = `
+    <div class="file-label">📄 ${filename} — processado em ${new Date().toLocaleString('pt-BR')}</div>
+
+    <div class="grid-top">
+      <div class="kpi" style="--kpi-color:var(--accent)">
+        <div class="num">${data.total}</div>
+        <div class="label">Total de atendimentos</div>
+        <div class="sub">Registros importados com sucesso</div>
+      </div>
+      <div class="kpi" style="--kpi-color:var(--male)">
+        <div class="num">${data.masc}</div>
+        <div class="label">Masculino</div>
+        <div class="sub">${pct(data.masc, data.total)}% do total</div>
+      </div>
+      <div class="kpi" style="--kpi-color:var(--female)">
+        <div class="num">${data.fem}</div>
+        <div class="label">Feminino</div>
+        <div class="sub">${pct(data.fem, data.total)}% do total</div>
+      </div>
+      <div class="kpi" style="--kpi-color:var(--ped)">
+        <div class="num">${data.ped}</div>
+        <div class="label">Pediatria</div>
+        <div class="sub">${pct(data.ped, data.total)}% do total</div>
+      </div>
+      <div class="kpi" style="--kpi-color:var(--clinic)">
+        <div class="num">${data.clinica}</div>
+        <div class="label">Clínica Geral</div>
+        <div class="sub">${pct(data.clinica, data.total)}% do total</div>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <div class="section">
+        <div class="section-header"><span class="dot" style="background:var(--accent)"></span><h2>Distribuição por Sexo</h2></div>
+        <div class="bar-row"><span>Masculino</span><div class="bar-track"><div class="bar-fill" style="width:${pct(data.masc,data.total)}%;background:var(--male)"></div></div><span class="bar-val">${data.masc}</span></div>
+        <div class="bar-row"><span>Feminino</span><div class="bar-track"><div class="bar-fill" style="width:${pct(data.fem,data.total)}%;background:var(--female)"></div></div><span class="bar-val">${data.fem}</span></div>
+      </div>
+      <div class="section">
+        <div class="section-header"><span class="dot" style="background:var(--accent2)"></span><h2>Distribuição por Especialidade</h2></div>
+        <div class="bar-row"><span>Clínica Geral</span><div class="bar-track"><div class="bar-fill" style="width:${pct(data.clinica,data.total)}%;background:var(--clinic)"></div></div><span class="bar-val">${data.clinica}</span></div>
+        <div class="bar-row"><span>Pediatria</span><div class="bar-track"><div class="bar-fill" style="width:${pct(data.ped,data.total)}%;background:var(--ped)"></div></div><span class="bar-val">${data.ped}</span></div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-header"><span class="dot" style="background:var(--warn)"></span><h2>Atendimentos por Faixa Etária</h2></div>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>Faixa etária</th><th>Distribuição</th><th style="text-align:right">Qtd</th><th style="text-align:right">%</th></tr></thead>
+          <tbody>
+            ${ageRows.map(r => `
+              <tr class="${r.count === 0 ? 'n-zero' : ''}">
+                <td class="age-group">${r.label}</td>
+                <td><div class="bar-track"><div class="bar-fill" style="width:${pct(r.count,maxN)}%;background:var(--accent2)"></div></div></td>
+                <td style="text-align:right">${r.count}</td>
+                <td style="text-align:right">${r.count > 0 ? pct(r.count, data.total) + '%' : '—'}</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+function setStatus(type, msg) {
+  const el = document.getElementById('status');
+  el.className = type;
+  el.innerHTML = msg;
+  el.style.display = 'block';
+}
+</script>
+</body>
+</html>
