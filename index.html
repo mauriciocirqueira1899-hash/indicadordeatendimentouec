@@ -5,7 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Consolidado de Atendimentos – UEMHJ</title>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 
 <style>
@@ -103,7 +102,7 @@
     <path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1M12 12V3M8 7l4-4 4 4"/>
   </svg>
   <strong>Arraste o arquivo aqui</strong>
-  <p>Suporta PDF (texto nativo) e Excel / CSV — padrão de colunas UEMHJ</p>
+  <p>Suporta <b>PDF nativo do AGHUse</b> e Excel / CSV — limpeza automática de cabeçalho, linhas sem diagnóstico e totalizador</p>
   <button class="btn-upload" onclick="document.getElementById('file-input').click()">Ou clique para escolher</button>
   <input type="file" id="file-input" accept=".pdf,.xlsx,.xls,.csv">
 </div>
@@ -114,7 +113,7 @@
 <footer>Processamento 100% local — nenhum dado é enviado a servidores externos.</footer>
 
 <script>
-pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+// Sem pdf.js — parser nativo JavaScript puro
 
 const dz = document.getElementById('dropzone');
 const fi = document.getElementById('file-input');
@@ -147,77 +146,179 @@ async function handleFile(file) {
   }
 }
 
-async function readPdfWithPdfJs(file) {
-  const buf = await file.arrayBuffer();
-  const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
-  let lines = [];
+// ─── LEITOR DE PDF — JavaScript puro, sem bibliotecas externas ─────────────────
+// Lê o ArrayBuffer do PDF, descomprime os streams FlateDecode com DecompressionStream
+// (API nativa do browser), extrai pares (X, Y, texto) dos operadores Tm/Tj,
+// mapeia cada texto à sua coluna pelo X, e agrupa por prontuário.
+// Coordenadas X calibradas no relatório AGHUse:
+//   prontuário:    60–124     nome:  124–225
+//   sexo:         225–325     idade: 325–425
+//   especialidade:425–525     data:  525–625
+//   gravidade:    625–725     diagnóstico: 725–900
 
-  for (let i = 1; i <= pdf.numPages; i++) {
-    const page = await pdf.getPage(i);
-    const content = await page.getTextContent();
-    const items = content.items.map(it => ({
-      text: it.str.trim(),
-      x: Math.round(it.transform[4]),
-      y: Math.round(it.transform[5])
-    })).filter(it => it.text.length > 0);
+const PDF_COLS = [
+  { name:'prontuario',    lo: 60,  hi: 124 },
+  { name:'nome',          lo: 124, hi: 225 },
+  { name:'sexo',          lo: 225, hi: 325 },
+  { name:'idade',         lo: 325, hi: 425 },
+  { name:'especialidade', lo: 425, hi: 525 },
+  { name:'gravidade',     lo: 625, hi: 725 },
+  { name:'diagnostico',   lo: 725, hi: 900 },
+];
 
-    const groupLines = [];
-    for (const item of items) {
-      const existing = groupLines.find(l => Math.abs(l.y - item.y) <= 5);
-      if (existing) existing.parts.push(item);
-      else groupLines.push({ y: item.y, parts: [item] });
-    }
-    groupLines.sort((a, b) => b.y - a.y);
-    for (const line of groupLines) {
-      line.parts.sort((a, b) => a.x - b.x);
-      lines.push(...line.parts.map(p => p.text));
-    }
-  }
-  return parsePdfText(lines);
+const PDF_SKIP_TXT = new Set([
+  'Prontuario','Nome Paciente','Sexo','Idade','Especialidade',
+  'Data Atendimento','Gravidade','Diagnostico','EMERG_GERA_RELATORIOS',
+]);
+
+function pdfColFor(x) {
+  for (const c of PDF_COLS) if (x >= c.lo && x < c.hi) return c.name;
+  return null;
 }
 
-function parsePdfText(lines) {
-  const rows = [];
-  const PRONTUARIO = /^\d{5,8}$/;
-  const SEXO_RE    = /^(Masculino|Feminino|M|F)$/i;
-  const IDADE_TOK  = /\d+\s*(anos?|m[eê]s(?:es)?|dias?)/i;
-  const ESP_RE     = /(PEDIATRIA|CLINICA|MEDICA|GERAL)/i;
-  const DATE_RE    = /\d{2}\/\d{2}\/\d{4}/;
-
-  let i = 0;
-  while (i < lines.length) {
-    let line = lines[i];
-    if (!/^\d+$/.test(line) && !line.toLowerCase().includes('prontu')) { i++; continue; }
-
-    const rec = { prontuario: line, nome: '', sexo: '', idadeAnos: null, especialidade: '', diagnostico: '' };
-    i++;
-
-    if (i < lines.length && !SEXO_RE.test(lines[i]) && !DATE_RE.test(lines[i])) {
-      rec.nome = lines[i];
-      i++;
-    }
-
-    let lookAhead = 0;
-    while (lookAhead < 5 && (i + lookAhead) < lines.length) {
-      let curr = lines[i + lookAhead];
-      if (SEXO_RE.test(curr)) rec.sexo = curr;
-      if (IDADE_TOK.test(curr)) rec.idadeAnos = extrairIdadeFormatoComplexo(curr);
-      if (ESP_RE.test(curr)) rec.especialidade = curr;
-      lookAhead++;
-    }
-    i += 2;
-
-    const diagParts = [];
-    while (i < lines.length) {
-      let l = lines[i];
-      if (/^\d{5,8}$/.test(l) || l.toLowerCase().includes('prontuário')) break;
-      if (l.length > 2 && !DATE_RE.test(l)) diagParts.push(l);
-      i++;
-    }
-    rec.diagnostico = diagParts.join(' ').trim();
-    rows.push(rec);
+async function decompressStream(compressedBytes) {
+  // Usa DecompressionStream nativa do browser (Chrome 80+, Firefox 113+)
+  const ds = new DecompressionStream('deflate');  // zlib com header 78 9C
+  const writer = ds.writable.getWriter();
+  const reader = ds.readable.getReader();
+  writer.write(compressedBytes);
+  writer.close();
+  const chunks = [];
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
   }
-  return rows;
+  const total = chunks.reduce((n, c) => n + c.length, 0);
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) { out.set(c, off); off += c.length; }
+  return out;
+}
+
+async function readPdfWithPdfJs(file) {
+  const buf   = await file.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  // Converte Uint8Array → string Latin-1 em blocos (evita "call stack exceeded")
+  let raw = '';
+  const CHUNK = 8192;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    raw += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+
+  // ── 1. Encontra todos os streams FlateDecode ─────────────────────────────
+  // Padrão: "stream\r\n" ... "endstream"
+  const streamRE = /stream\r?\n([\s\S]*?)\r?\nendstream/g;
+  const allItems = [];  // { x, y, txt, pgIdx }
+  let pgIdx = 0;
+  let m;
+
+  while ((m = streamRE.exec(raw)) !== null) {
+    const streamStr = m[1];
+    // Converte para Uint8Array
+    const streamBytes = new Uint8Array(streamStr.length);
+    for (let i = 0; i < streamStr.length; i++) streamBytes[i] = streamStr.charCodeAt(i) & 0xff;
+
+    let decoded;
+    try {
+      decoded = await decompressStream(streamBytes);
+    } catch {
+      continue;  // stream não é FlateDecode ou corrompido
+    }
+
+    // Converte para string Latin-1 em blocos
+    let txt = '';
+    for (let i = 0; i < decoded.length; i += CHUNK) {
+      txt += String.fromCharCode(...decoded.subarray(i, i + CHUNK));
+    }
+
+    // Verifica se é um stream de conteúdo de página (tem operador BT/ET e Tm/Tj)
+    if (!txt.includes('Tm') || !txt.includes('Tj')) continue;
+
+    // Detecta cabeçalho de página (contém "Prontuario") → incrementa pgIdx
+    if (txt.includes('Prontuario')) pgIdx++;
+
+    // ── 2. Extrai pares (X, Y, texto) ───────────────────────────────────────
+    // Padrão: 1 0 0 1 X Y Tm ... (texto)Tj
+    let curX = 0, curY = 0;
+    const lines = txt.split('\n');
+    for (const line of lines) {
+      // Detecta comando de posicionamento: "1 0 0 1 X Y Tm"
+      const tmM = line.match(/^1\s+0\s+0\s+1\s+([\d.]+)\s+([\d.]+)\s+Tm/);
+      if (tmM) { curX = parseFloat(tmM[1]); curY = parseFloat(tmM[2]); continue; }
+
+      // Detecta texto: "(conteúdo)Tj"
+      const tjM = line.match(/\((.*?)\)\s*Tj/);
+      if (!tjM) continue;
+      const content = tjM[1].trim();
+      if (!content || PDF_SKIP_TXT.has(content)) continue;
+      // Ignora datas de atendimento e linhas de cabeçalho
+      if (/^\d{1,2}\/\d{1,2}\/\d{4}\s+\d{2}:\d{2}/.test(content)) continue;
+      if (/^Página:/.test(content)) continue;
+
+      const col = pdfColFor(curX);
+      if (col) allItems.push({ pg: pgIdx, y: curY, col, txt: content.replace(/\\([()\\])/g, '$1') });
+    }
+  }
+
+  if (allItems.length === 0) {
+    throw new Error(
+      'Não foi possível ler o texto deste PDF neste ambiente. ' +
+      'Por favor, exporte o relatório do AGHUse em formato Excel (.xlsx) e use esse arquivo.'
+    );
+  }
+
+  // ── 3. Agrupa por (pg, Y) e depois por prontuário ────────────────────────
+  const rowMap = new Map();
+  for (const item of allItems) {
+    const yBand = Math.round(item.y * 2) / 2;
+    const key = `${item.pg}|${yBand}`;
+    if (!rowMap.has(key)) rowMap.set(key, { pg: item.pg, y: yBand });
+    const row = rowMap.get(key);
+    row[item.col] = row[item.col] ? row[item.col] + ' ' + item.txt : item.txt;
+  }
+
+  // Ordena: pg asc, y desc (topo da página primeiro — Y cresce de baixo p/ cima em PDF)
+  const sortedRows = [...rowMap.values()].sort((a, b) =>
+    a.pg !== b.pg ? a.pg - b.pg : b.y - a.y
+  );
+
+  // ── 4. Agrupa fragmentos no paciente correspondente ──────────────────────
+  const patients = [];
+  let cur = null;
+
+  for (const row of sortedRows) {
+    const pron = (row.prontuario || '').trim();
+    const isProntuario = /^\d{5,9}$/.test(pron);
+
+    if (isProntuario) {
+      if (cur) patients.push(cur);
+      cur = {
+        prontuario:    pron,
+        sexo:          row.sexo          || '',
+        idadeStr:      row.idade         || '',
+        especialidade: row.especialidade || '',
+        diagnostico:   row.diagnostico   || '',
+      };
+    } else if (cur) {
+      if (row.diagnostico)                            cur.diagnostico   += ' ' + row.diagnostico;
+      if (row.especialidade && !cur.especialidade)    cur.especialidade  = row.especialidade;
+      if (row.idade)                                  cur.idadeStr      += ' ' + row.idade;
+    }
+  }
+  if (cur) patients.push(cur);
+
+  // ── 5. Aplica mesmas regras de limpeza do Excel ──────────────────────────
+  return patients
+    .filter(p => p.diagnostico.trim() !== '')
+    .map(p => ({
+      prontuario:    p.prontuario,
+      nome:          '',
+      sexo:          p.sexo.trim(),
+      idadeAnos:     extrairIdadeFormatoComplexo(p.idadeStr),
+      especialidade: p.especialidade.replace(/\s+/g, ' ').trim(),
+      diagnostico:   p.diagnostico.replace(/\s+/g, ' ').trim(),
+    }));
 }
 
 async function parseExcel(file) {
