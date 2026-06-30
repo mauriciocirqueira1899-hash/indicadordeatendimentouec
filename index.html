@@ -114,6 +114,16 @@
 <footer>Processamento 100% local — nenhum dado é enviado a servidores externos.</footer>
 
 <script>
+// ==========================================
+// CONFIGURAÇÕES PADRÃO DO LAYOUT BPA
+// ==========================================
+const CONFIG_BPA = {
+  CNES: '0007587',          // 7 dígitos
+  CBO: '223505',            // 6 dígitos
+  SERV_CLASS: '00501',      // 5 dígitos (Serviço + Classificação)
+  PROCEDIMENTO: '0301010048'// 10 dígitos
+};
+
 const dz = document.getElementById('dropzone');
 const fi = document.getElementById('file-input');
 
@@ -136,7 +146,17 @@ async function handleFile(file) {
     
     if (!rows || rows.length === 0) throw new Error('Não foi possível extrair linhas de dados deste arquivo.');
     
+    // ==========================================
+    // CAPTURA DINÂMICA DA COMPETÊNCIA (DATA DO ARQUIVO)
+    // ==========================================
+    const dataAlteracao = new Date(file.lastModified);
+    const ano = dataAlteracao.getFullYear();
+    const mes = String(dataAlteracao.getMonth() + 1).padStart(2, '0');
+    const competenciaDinamica = `${ano}${mes}`; // Gera o formato AAAAMM
+
     const data = consolidate(rows);
+    data.competencia = competenciaDinamica; // Armazena a competência para uso posterior
+    
     setStatus('ok', `✓ Arquivo "${file.name}" processado com sucesso! Contados ${data.efetivos} atendimentos clínicos e ${data.desistencias} desistências.`);
     showResults(data, file.name);
   } catch (err) {
@@ -146,10 +166,10 @@ async function handleFile(file) {
 }
 
 const PDF_COLS = [
-  { name:'prontuario',    lo: 60,  hi: 124 },
+  { name:'prontuario',  lo: 60,  hi: 124 },
   { name:'nome',          lo: 124, hi: 225 },
   { name:'sexo',          lo: 225, hi: 325 },
-  { name:'idade',         lo: 325, hi: 425 },
+  { name:'idade',          lo: 325, hi: 425 },
   { name:'especialidade', lo: 425, hi: 525 },
   { name:'gravidade',     lo: 625, hi: 725 },
   { name:'diagnostico',   lo: 725, hi: 900 },
@@ -258,12 +278,10 @@ async function readPdfWithPdfJs(file) {
 
   for (const row of sortedRows) {
     const pron = (row.prontuario || '').trim();
-    // Regex aprimorada para validar se a célula possui um ou mais números de prontuário válidos
     const limpoParaValidacao = pron.replace(/\s+/g, '');
     const isProntuario = /^\d+$/.test(limpoParaValidacao) && limpoParaValidacao.length >= 5;
 
     if (isProntuario) {
-      // Se houver mais de um prontuário grudado por erro do PDF (Caso UECAJ8), pega o primeiro
       const prontReal = pron.split(/\s+/)[0];
       
       if (cur) patients.push(cur);
@@ -284,14 +302,13 @@ async function readPdfWithPdfJs(file) {
 
   return patients.map(p => {
     const diagLimpo = p.diagnostico.replace(/\s+/g, ' ').trim();
-    // Inteligência Artificial do Filtro: Se não tiver CID válido entre parênteses, vira desistência limpa
     const temCidValido = /\([A-Z]\d{2}/i.test(diagLimpo);
     
     return {
       prontuario:    p.prontuario,
       nome:          '',
       sexo:          p.sexo.trim(),
-      idadeAnos:     extrairIdadeFormatoComplexo(p.idadeStr),
+      idadeAnos:      extrairIdadeFormatoComplexo(p.idadeStr),
       especialidade: p.especialidade.replace(/\s+/g, ' ').trim(),
       diagnostico:   temCidValido ? diagLimpo : '',
       desistente:    !temCidValido
@@ -392,7 +409,7 @@ function consolidate(rows) {
 
     const idade = r.idadeAnos;
     if (idade !== null) {
-      const bucket = idade < 1 ? '0-1' : String(Math.floor(idade));
+      const bucket = idade < 2 ? '0-1' : String(Math.floor(idade));
       ageBuckets[bucket] = (ageBuckets[bucket] || 0) + 1;
     }
 
@@ -415,6 +432,59 @@ function consolidate(rows) {
   };
 }
 
+// ==========================================
+// FUNÇÃO GERAÇÃO DO BPA COM COMPETÊNCIA DINÂMICA
+// ==========================================
+function gerarEDownloadBPA(data) {
+  let txtConteudo = "";
+  const competenciaBPA = data.competencia;
+
+  // 1. Processa a exceção de 0 a 1 ano agrupados
+  const totalZeroAUm = data.ageBuckets['0-1'] || 0;
+  if (totalZeroAUm > 0) {
+    txtConteudo += constroiLinhaBPA('0-1', totalZeroAUm, competenciaBPA) + "\r\n";
+  }
+
+  // 2. Processa as demais idades de 2 a 120 anos
+  for (let a = 2; a <= 120; a++) {
+    const totalPorIdade = data.ageBuckets[String(a)] || 0;
+    if (totalPorIdade > 0) {
+      txtConteudo += constroiLinhaBPA(String(a), totalPorIdade, competenciaBPA) + "\r\n";
+    }
+  }
+
+  if (txtConteudo === "") {
+    alert("Nenhum dado efetivo encontrado para gerar o arquivo BPA.");
+    return;
+  }
+
+  const blob = new Blob([txtConteudo], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `BPA_CONSOLIDADO_${competenciaBPA}.txt`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// Construtor posicional adaptado para receber a competência calculada
+function constroiLinhaBPA(faixaIdade, quantidade, competencia) {
+  const sequencia = "02"; 
+  const cnes = CONFIG_BPA.CNES.padStart(7, '0');
+  const competenciaFormatada = competencia.padStart(6, '0');
+  const cbo = CONFIG_BPA.CBO.padStart(6, '0');
+  const servClass = CONFIG_BPA.SERV_CLASS.padStart(5, '0');
+  const procedimento = CONFIG_BPA.PROCEDIMENTO.padStart(10, '0');
+  
+  const idadeFormatada = faixaIdade === '0-1' ? '035' : faixaIdade.padStart(3, '0');
+  const qtdFormatada = String(quantidade).padStart(6, '0');
+  const fimMarcador = "BPA";
+
+  return `${sequencia}${cnes}${competenciaFormatada}${cbo}${servClass}${procedimento}${idadeFormatada}${qtdFormatada}${fimMarcador}`;
+}
+
 function showResults(data, filename) {
   const el = document.getElementById('results');
   if (!data) { el.style.display = 'none'; el.innerHTML = ''; return; }
@@ -429,52 +499,56 @@ function showResults(data, filename) {
   const maxN = Math.max(...ageRows.map(r => r.count), 1);
 
   el.innerHTML = `
-    <div class="file-label">📄 ${filename} — processado em ${new Date().toLocaleString('pt-BR')}</div>
+    <div class="file-label" style="display: flex; justify-content: space-between; align-items: center;">
+      <span>📄 ${filename} — processado em ${new Date().toLocaleString('pt-BR')}</span>
+      <button id="btn-download-bpa" style="background: var(--clinic, #2ecc71); color: #fff; border: none; padding: 8px 15px; border-radius: 4px; cursor: pointer; font-weight: bold;">
+        📥 Baixar Arquivo TXT (BPA ${data.competencia})
+      </button>
+    </div>
 
     <div class="grid-top">
-  <div class="kpi" style="--kpi-color:var(--accent)">
-    <div class="num">${data.total}</div>
-    <div class="label">Total Fichas</div>
-    <div class="sub">Total de registros lidos</div>
-  </div>
+      <div class="kpi" style="--kpi-color:var(--accent)">
+        <div class="num">${data.total}</div>
+        <div class="label">Total Fichas</div>
+        <div class="sub">Total de registros lidos</div>
+      </div>
 
-  <div class="kpi" style="--kpi-color:var(--clinic)">
-    <div class="num">${data.efetivos}</div>
-    <div class="label">Atendimentos Efetivos</div>
-    <div class="sub">${pct(data.efetivos, data.total)}% do total</div>
-  </div>
+      <div class="kpi" style="--kpi-color:var(--clinic)">
+        <div class="num">${data.efetivos}</div>
+        <div class="label">Atendimentos Efetivos</div>
+        <div class="sub">${pct(data.efetivos, data.total)}% do total</div>
+      </div>
 
-  <div class="kpi" style="--kpi-color:var(--desist)">
-    <div class="num">${data.desistencias}</div>
-    <div class="label">Desistências</div>
-    <div class="sub">${pct(data.desistencias, data.total)}% do total</div>
-  </div>
+      <div class="kpi" style="--kpi-color:var(--desist)">
+        <div class="num">${data.desistencias}</div>
+        <div class="label">Desistências</div>
+        <div class="sub">${pct(data.desistencias, data.total)}% do total</div>
+      </div>
 
-  <div class="kpi" style="--kpi-color:var(--male)">
-    <div class="num">${data.masc}</div>
-    <div class="label">Masculino</div>
-    <div class="sub">${pct(data.masc, data.efetivos)}% dos efetivos</div>
-  </div>
+      <div class="kpi" style="--kpi-color:var(--male)">
+        <div class="num">${data.masc}</div>
+        <div class="label">Masculino</div>
+        <div class="sub">${pct(data.masc, data.efetivos)}% dos efetivos</div>
+      </div>
 
-  <div class="kpi" style="--kpi-color:var(--female)">
-    <div class="num">${data.fem}</div>
-    <div class="label">Feminino</div>
-    <div class="sub">${pct(data.fem, data.efetivos)}% dos efetivos</div>
-  </div>
+      <div class="kpi" style="--kpi-color:var(--female)">
+        <div class="num">${data.fem}</div>
+        <div class="label">Feminino</div>
+        <div class="sub">${pct(data.fem, data.efetivos)}% dos efetivos</div>
+      </div>
 
-  <div class="kpi" style="--kpi-color:var(--ped)">
-    <div class="num">${data.ped}</div>
-    <div class="label">Pediatria</div>
-    <div class="sub">${pct(data.ped, data.efetivos)}% dos efetivos</div>
-  </div>
+      <div class="kpi" style="--kpi-color:var(--ped)">
+        <div class="num">${data.ped}</div>
+        <div class="label">Pediatria</div>
+        <div class="sub">${pct(data.ped, data.efetivos)}% dos efetivos</div>
+      </div>
 
-  <div class="kpi" style="--kpi-color:var(--clinic)">
-    <div class="num">${data.clinica}</div>
-    <div class="label">Clínica Geral</div>
-    <div class="sub">${pct(data.clinica, data.efetivos)}% dos efetivos</div>
-  </div>
-</div>
-
+      <div class="kpi" style="--kpi-color:var(--clinic)">
+        <div class="num">${data.clinica}</div>
+        <div class="label">Clínica Geral</div>
+        <div class="sub">${pct(data.clinica, data.efetivos)}% dos efetivos</div>
+      </div>
+    </div>
 
     <div class="grid-2">
       <div class="section">
@@ -507,6 +581,10 @@ function showResults(data, filename) {
       </div>
     </div>
   `;
+
+  document.getElementById('btn-download-bpa').addEventListener('click', () => {
+    gerarEDownloadBPA(data);
+  });
 }
 
 function setStatus(type, msg) {
