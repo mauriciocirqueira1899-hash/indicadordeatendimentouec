@@ -129,36 +129,58 @@ const fi = document.getElementById('file-input');
 
 dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag-over'); });
 dz.addEventListener('dragleave', () => dz.classList.remove('drag-over'));
-dz.addEventListener('drop', e => { e.preventDefault(); dz.classList.remove('drag-over'); handleFile(e.dataTransfer.files[0]); });
-fi.addEventListener('change', () => { if (fi.files[0]) handleFile(fi.files[0]); });
+dz.addEventListener('drop', e => { 
+  e.preventDefault(); 
+  dz.classList.remove('drag-over'); 
+  handleFiles(e.dataTransfer.files); 
+});
 
-async function handleFile(file) {
-  setStatus('info', `Lendo "${file.name}"…`);
+fi.addEventListener('change', () => { 
+  if (fi.files.length > 0) handleFiles(fi.files); 
+});
+
+async function handleFiles(files) {
+  setStatus('info', `Lendo ${files.length} arquivo(s)…`);
   showResults(null);
+  
   try {
-    const ext = file.name.split('.').pop().toLowerCase();
-    let rows;
-    if (ext === 'pdf') {
-      rows = await readPdfWithPdfJs(file);
-    } else {
-      rows = await parseExcel(file);
+    let todasAsLinhas = [];
+    let competenciaDinamica = null;
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const ext = file.name.split('.').pop().toLowerCase();
+      let rows;
+      
+      if (ext === 'pdf') {
+        rows = await readPdfWithPdfJs(file);
+      } else {
+        rows = await parseExcel(file);
+      }
+      
+      if (rows && rows.length > 0) {
+        todasAsLinhas = todasAsLinhas.concat(rows); // Junta as linhas deste arquivo com o total
+      }
+
+      if (!competenciaDinamica) {
+        const dataAlteracao = new Date(file.lastModified);
+        const ano = dataAlteracao.getFullYear();
+        const mes = String(dataAlteracao.getMonth() + 1).padStart(2, '0');
+        competenciaDinamica = `${ano}${mes}`;
+      }
     }
     
-    if (!rows || rows.length === 0) throw new Error('Não foi possível extrair linhas de dados deste arquivo.');
-    
-    // ==========================================
-    // CAPTURA DINÂMICA DA COMPETÊNCIA (DATA DO ARQUIVO)
-    // ==========================================
-    const dataAlteracao = new Date(file.lastModified);
-    const ano = dataAlteracao.getFullYear();
-    const mes = String(dataAlteracao.getMonth() + 1).padStart(2, '0');
-    const competenciaDinamica = `${ano}${mes}`; // Gera o formato AAAAMM
+    if (todasAsLinhas.length === 0) {
+      throw new Error('Não foi possível extrair linhas de dados de nenhum dos arquivos.');
+    }
 
-    const data = consolidate(rows);
-    data.competencia = competenciaDinamica; // Armazena a competência para uso posterior
+    const data = consolidate(todasAsLinhas);
+    data.competencia = competenciaDinamica;
+    const nomeExibicao = files.length > 1 ? `${files.length} arquivos combinados` : files[0].name;
+
+    setStatus('ok', `✓ ${files.length} arquivo(s) processado(s) com sucesso! Contados ${data.efetivos} atendimentos clínicos e ${data.desistencias} desistências.`);
+    showResults(data, nomeExibicao);
     
-    setStatus('ok', `✓ Arquivo "${file.name}" processado com sucesso! Contados ${data.efetivos} atendimentos clínicos e ${data.desistencias} desistências.`);
-    showResults(data, file.name);
   } catch (err) {
     setStatus('error', `Erro ao processar: ${err.message}`);
     console.error(err);
